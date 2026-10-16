@@ -42,10 +42,13 @@ def causal_conv1d_bwd(
     """
     dx = torch.empty(x.shape, dtype=x.dtype, device=x.device)
     num_tiles = chunk_indices.shape[0]
+
     if num_tiles == 0:
         return dx, torch.zeros_like(weight)
+
     strips = -(-x.shape[-1] // _CHANNELS_PER_BLOCK)
     blocks_per_strip = min(num_tiles, -(-_TARGET_BLOCKS // strips))
     partials = torch.empty(blocks_per_strip, x.shape[-1], WIDTH, dtype=torch.float32, device=x.device)
+
     causal_conv1d_bwd_cuda.causal_conv1d_bwd(x, weight, dout, cu_seqlens, chunk_indices, TILE_ROWS, dx, partials)
     return dx, partials.sum(0).to(weight.dtype)
