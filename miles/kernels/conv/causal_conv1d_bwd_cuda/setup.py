@@ -21,11 +21,11 @@ setup(
             name="causal_conv1d_bwd_cuda",
             sources=["causal_conv1d_bwd.cu"],
             extra_compile_args={
-                "cxx": ["-O3", "-std=c++17"],
+                # No -std flag: torch adds the C++ standard its headers need.
+                "cxx": ["-O3"],
                 # causal-conv1d's own flags, so the numerics match the kernel this is adapted from.
                 "nvcc": [
                     "-O3",
-                    "-std=c++17",
                     "-U__CUDA_NO_HALF_OPERATORS__",
                     "-U__CUDA_NO_HALF_CONVERSIONS__",
                     "-U__CUDA_NO_BFLOAT16_OPERATORS__",

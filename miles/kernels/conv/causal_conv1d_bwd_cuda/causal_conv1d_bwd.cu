@@ -115,18 +115,20 @@ __global__ __launch_bounds__(kNThreads) void causal_conv1d_bwd_kernel(Params par
         const int t_end = min(t0 + kChunkSizeL, eos);
 
         // Rows outside [bos, eos) load as zero; that is all the boundary handling the math below needs.
+        // All of the tile's global loads are issued before its first shared-memory store, so they are in flight
+        // together; storing each row as it arrives serializes them (one memory round trip per row step).
+        vec_t dout_rows[kNLoads], x_rows[kNLoads];
 #pragma unroll
         for (int l = 0; l < kNLoads; ++l) {
-            input_t dout_load[kNElts] = {0};
-            input_t x_load[kNElts] = {0};
             const int p = t0 + l * kLPerLoad + l_idx;
-            if (p < t_end && c_load_ok) {
-                reinterpret_cast<vec_t*>(dout_load)[0] = *reinterpret_cast<const vec_t*>(dout + p * params.dout_l_stride);
-                reinterpret_cast<vec_t*>(x_load)[0] = *reinterpret_cast<const vec_t*>(x + p * params.x_l_stride);
-            }
-            reinterpret_cast<vec_t*>(dout_smem[l * kLPerLoad + l_idx])[c_idx] = reinterpret_cast<vec_t*>(dout_load)[0];
-            reinterpret_cast<vec_t*>(x_smem[kWidth - 1 + l * kLPerLoad + l_idx])[c_idx] =
-                reinterpret_cast<vec_t*>(x_load)[0];
+            const bool in_tile = p < t_end && c_load_ok;
+            dout_rows[l] = in_tile ? *reinterpret_cast<const vec_t*>(dout + p * params.dout_l_stride) : vec_t{0, 0, 0, 0};
+            x_rows[l] = in_tile ? *reinterpret_cast<const vec_t*>(x + p * params.x_l_stride) : vec_t{0, 0, 0, 0};
+        }
+#pragma unroll
+        for (int l = 0; l < kNLoads; ++l) {
+            reinterpret_cast<vec_t*>(dout_smem[l * kLPerLoad + l_idx])[c_idx] = dout_rows[l];
+            reinterpret_cast<vec_t*>(x_smem[kWidth - 1 + l * kLPerLoad + l_idx])[c_idx] = x_rows[l];
         }
         if (l_idx < kWidth - 1) {
             input_t dout_load[kNElts] = {0};
