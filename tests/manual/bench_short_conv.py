@@ -4,11 +4,11 @@ backward where ``_seqtile_applies``, fla's path elsewhere).
 
     python tests/manual/bench_short_conv.py
 
-Times the whole op with input and weight gradients through ``triton.testing.do_bench_cudagraph(rep=20)``, the
-median of 7 rounds that alternate between backends (the method of fla-org/flash-linear-attention#1328). Before
-timing, every backend's output and gradients are checked against an fp32 per-sequence reference. Shapes: Kimi-K3's
-q/k/v convs at TP 1/2/4 (12288 / 6144 / 3072 channels, fp32 weight) under several packings, and the packed shapes
-of #1328 (bf16 weight here, no bias).
+Times the forward alone and forward + backward (input and weight gradients; backward is their difference)
+through ``triton.testing.do_bench_cudagraph(rep=20)``, the median of 7 rounds that alternate between backends
+(the method of fla-org/flash-linear-attention#1328). Before timing, every backend's output and gradients are
+checked against an fp32 per-sequence reference. Shapes: Kimi-K3's q/k/v convs at TP 1/2/4 (12288 / 6144 / 3072
+channels, fp32 weight) under several packings, and the packed shapes of #1328 (bf16 weight here, no bias).
 """
 
 import random
@@ -90,30 +90,45 @@ def run_shape(tokens, channels, packing, weight_dtype, backends):
         errors[b] = max(rel_err(out, r) for out, r in zip((y, *grads), ref, strict=True))
     # A live autograd graph from these eager runs would make CUDA graph capture fail (stale stream reference).
     del y, grads, y_ref
-    samples = {b: [] for b in backends}
+
+    # Forward alone (no autograd) and forward + backward; backward = their difference.
+    def fwd(backend):
+        with torch.no_grad():
+            return linear_attn.causal_short_conv(x, weight, "silu", backend, cu_seqlens=cu)
+
+    samples = {(b, mode): [] for b in backends for mode in ("fwd", "fwdbwd")}
     for _ in range(ROUNDS):
         for b in backends:
-            samples[b].append(do_bench_cudagraph(lambda b=b: fwd_bwd(b), rep=20, return_mode="median"))
-    return {b: statistics.median(s) for b, s in samples.items()}, errors
+            for mode, fn in (("fwd", fwd), ("fwdbwd", fwd_bwd)):
+                samples[b, mode].append(do_bench_cudagraph(lambda fn=fn, b=b: fn(b), rep=20, return_mode="median"))
+    return {key: statistics.median(s) for key, s in samples.items()}, errors
 
 
 def main():
     backends = ["triton", "mix", "miles"] if linear_attn.conv_bwd_kernel_available() else ["triton", "mix"]
-    print(f"{torch.cuda.get_device_name()}  fwd+bwd ms (cudagraph median of {ROUNDS} alternating rounds)")
+    print(f"{torch.cuda.get_device_name()}  ms, cudagraph median of {ROUNDS} alternating rounds: fwd+bwd (fwd / bwd)")
     print(
         f"{'tokens x channels':>18} {'packing':>8} {'weight':>8} {'miles path':>10} "
-        + "".join(f"{b:>9}" for b in backends)
+        + "".join(f"{b:>24}" for b in backends)
         + "  max rel err"
     )
     for tokens, channels, packing, weight_dtype in SHAPES:
         cu = cu_seqlens(tokens, packing)
-        x_meta = torch.empty(1, tokens, channels, dtype=torch.bfloat16, device="meta")
-        w_meta = torch.empty(channels, WIDTH, dtype=weight_dtype, device="meta")
-        seqtile = linear_attn._seqtile_applies(x_meta, w_meta, "silu", cu, None)
+        seqtile = linear_attn._seqtile_applies(
+            x=torch.empty(1, tokens, channels, dtype=torch.bfloat16, device="meta"),
+            weight=torch.empty(channels, WIDTH, dtype=weight_dtype, device="meta"),
+            activation="silu",
+            cu_seqlens=cu,
+            cp_context=None,
+        )
         times, errors = run_shape(tokens, channels, packing, weight_dtype, backends)
+        cells = []
+        for b in backends:
+            total, forward = times[b, "fwdbwd"], times[b, "fwd"]
+            cells.append(f"{f'{total:.3f} ({forward:.3f} / {total - forward:.3f})':>24}")
         print(
             f"{f'{tokens} x {channels}':>18} {packing:>8} {str(weight_dtype)[6:]:>8} {'seqtile' if seqtile else 'fla':>10} "
-            + "".join(f"{times[b]:9.3f}" for b in backends)
+            + "".join(cells)
             + "  "
             + " ".join(f"{b}={errors[b]:.1e}" for b in backends),
             flush=True,

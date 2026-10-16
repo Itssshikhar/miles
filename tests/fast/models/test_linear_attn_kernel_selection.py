@@ -46,7 +46,7 @@ def test_short_conv_backend_prefers_the_miles_backward_when_built(monkeypatch, k
 
 
 def _seqtile_args(**changes):
-    """A shape the "miles" backward takes (8192 x 1024 sits exactly on its size floor), with ``changes``.
+    """A shape the "miles" backward takes (8192 x 1024, above its 1M-element size floor), with ``changes``.
     Meta tensors: the gate reads shapes and strides only."""
     torch = pytest.importorskip("torch")
     args = {
@@ -60,7 +60,7 @@ def _seqtile_args(**changes):
 
 
 _SEQTILE_FALLBACKS = {
-    "below_floor": lambda torch: {"x": torch.empty(1, 4096, 1024, dtype=torch.bfloat16, device="meta")},
+    "below_floor": lambda torch: {"x": torch.empty(1, 512, 1024, dtype=torch.bfloat16, device="meta")},
     # 16-token sequences, under half a 64-row tile on average
     "short_sequences": lambda torch: {"cu_seqlens": torch.empty(8192 // 16 + 1, dtype=torch.int32, device="meta")},
     "context_parallel": lambda torch: {"cp_context": object()},

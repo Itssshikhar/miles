@@ -53,10 +53,9 @@ WEIGHT_LAYOUT_VERSION = 1
 INT32_ELEMENTS = 2**31 - 1
 _CHUNK_ELEMENTS = 2**30
 _CHANNEL_ALIGN = 128
-# Below this many tokens x channels causal-conv1d's conv backward is as fast or faster than the sequence-aligned
-# one: its fixed cost (the dweight partials and their sum) outweighs its gain. Fwd+bwd on H200 and B200: slower at
-# 1-2M elements, mixed at 4M, faster in every case from 8M up.
-_SEQTILE_MIN_ELEMENTS = 8 * 2**20
+# The sequence-aligned backward beats causal-conv1d's at every size measured on H200 and B200, 1M to 192M tokens x
+# channels (fwd+bwd 4 us to 0.35 ms faster). Smaller inputs are unmeasured, so they keep fla's path.
+_SEQTILE_MIN_ELEMENTS = 2**20
 
 
 def gdn_kernel(backend: str):

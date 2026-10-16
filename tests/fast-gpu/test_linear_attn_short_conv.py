@@ -58,8 +58,8 @@ def test_conv_matches_float64_reference(backend):
 
 @pytest.mark.skipif(not linear_attn.conv_bwd_kernel_available(), reason="causal_conv1d_bwd_cuda extension not built")
 def test_miles_backend_runs_the_sequence_aligned_backward(monkeypatch):
-    """Above the size floor the "miles" backend takes miles.kernels.conv's backward, and still matches the
-    float64 reference; the case above (2048 x 768) falls back to fla's path."""
+    """The "miles" backend takes miles.kernels.conv's backward (asserted here, not just assumed from the gate)
+    and still matches the float64 reference, on a larger input with uneven sequences."""
     torch.manual_seed(0)
     tokens, channels = 8192, 1024
     calls = []
