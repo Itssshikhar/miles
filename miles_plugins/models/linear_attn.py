@@ -56,6 +56,7 @@ _CHANNEL_ALIGN = 128
 # The sequence-aligned backward beats causal-conv1d's at every size measured on H200 and B200, 1M to 192M tokens x
 # channels (fwd+bwd 4 us to 0.35 ms faster). Smaller inputs are unmeasured, so they keep fla's path.
 _SEQTILE_MIN_ELEMENTS = 2**20
+_ROW_STRIDE_ALIGN = 8
 
 
 def gdn_kernel(backend: str):
@@ -453,12 +454,32 @@ class LinearAttention(MegatronModule, ABC):
 
 class GatedDeltaNet(LinearAttention):
     """Gated DeltaNet: one softplus-gated decay per value head, through fla's or FlashQLA's chunked
-    kernel. Models subclass it with their projections."""
+    kernel. Models subclass it with their projections and :meth:`in_proj_sections`; all four projections
+    run as one GEMM whose width is zero-padded to a multiple of 8, the row-stride alignment causal-conv1d's
+    channel-last backward requires of the q/k/v view."""
 
     def __init__(self, config, heads, conv_kernel_size, norm_eps, tp_group, backend="fla", norm_activation="silu"):
         gdn_kernel(backend)
         super().__init__(config, heads, conv_kernel_size, norm_eps, tp_group, norm_activation)
         self.backend = backend
+        local = self.local
+        self.in_proj_widths = (
+            local.num_k_heads * local.group_qkv_dim,
+            local.value_dim,
+            local.num_v_heads,
+            local.num_v_heads,
+        )
+        self.in_proj_padding = -sum(self.in_proj_widths) % _ROW_STRIDE_ALIGN
+
+    @abstractmethod
+    def in_proj_sections(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """This rank's q/k/v (group-major), z, b and a weight rows, each ``[width, hidden]``."""
+
+    def project(self, x):
+        sections = self.in_proj_sections()
+        padding = sections[0].new_zeros(self.in_proj_padding, x.shape[-1])
+        out = F.linear(x, torch.cat([*sections, padding]))
+        return Projections(*out.split([*self.in_proj_widths, self.in_proj_padding], dim=-1)[:4])
 
     def recurrence(self, q, k, v, beta_logits, decay, cu_seqlens, cp_context):
         return gdn_recurrence(
